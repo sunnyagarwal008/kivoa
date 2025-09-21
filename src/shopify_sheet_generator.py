@@ -137,9 +137,9 @@ class JewelryCSVProcessor:
             Analyze this jewelry image and provide the following information in a structured format:
 
             1. TITLE: Generate a 4-5 word catchy product title that would appeal to customers
-            2. DESCRIPTION: Write a 5-6 line SEO-friendly product description that highlights the jewelry's features, materials, and appeal
+            2. DESCRIPTION: Write a 5-6 line SEO-friendly product description in a luxury tone that highlights the jewelry's features, materials, and appeal
             3. CATEGORY: Identify the jewelry category (e.g., Necklace, Earrings, Ring, Bracelet, Pendant, Chain, etc.)
-            4. TAGS: Generate 8-10 relevant tags separated by commas (include style, material, occasion, color, etc.)
+            4. TAGS: Generate 8-10 relevant one word tags separated by commas (include style, material, occasion, color, etc.)
 
             Please format your response exactly like this:
             TITLE: [your title here]
@@ -176,7 +176,7 @@ class JewelryCSVProcessor:
 
         except Exception as e:
             logger.error(f"Error analyzing image with Gemini for SKU {sku}: {e}")
-            return self.get_fallback_product_info(sku, price)
+            raise e
 
     def parse_gemini_response(self, response_text: str) -> Dict[str, str]:
         """Parse Gemini response to extract structured information"""
@@ -215,21 +215,8 @@ class JewelryCSVProcessor:
 
         except Exception as e:
             logger.error(f"Error parsing Gemini response: {e}")
-            return {
-                'title': 'Beautiful Jewelry Piece',
-                'description': 'Elegant and stylish jewelry piece perfect for any occasion.',
-                'category': 'Jewelry',
-                'tags': 'jewelry, elegant, stylish, fashion, accessory'
-            }
+            raise e
 
-    def get_fallback_product_info(self, sku: str, price: float) -> Dict[str, str]:
-        """Generate fallback product information when Gemini analysis fails"""
-        return {
-            'title': f'Jewelry Item {sku}',
-            'description': f'Beautiful jewelry piece with SKU {sku}. Crafted with attention to detail and perfect for any occasion. High-quality materials and elegant design make this a must-have accessory.',
-            'category': 'Jewelry',
-            'tags': 'jewelry, elegant, fashion, accessory, handcrafted'
-        }
 
     def create_shopify_handle(self, title: str, sku: str) -> str:
         """Create a Shopify handle from title and SKU"""
@@ -322,14 +309,15 @@ class JewelryCSVProcessor:
             # Clean up temporary image
             try:
                 image_path.unlink()
-            except:
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary image {image_path}: {e}")
                 pass
 
             return shopify_row
 
         except Exception as e:
             logger.error(f"Error processing row {row}: {e}")
-            return None
+            raise e
 
     def process_csv_file(self, input_file: str, output_file: str) -> None:
         """Process the entire CSV file"""
