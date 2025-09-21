@@ -18,7 +18,7 @@ def example_basic_upload():
     uploader = ShopifyImageUploader(
         shop_url=SHOPIFY_STORE_URL,
         api_key=SHOPIFY_API_KEY,
-        secret_key=SHOPIFY_SECRET_KEY
+        access_token=SHOPIFY_SECRET_KEY
     )
     
     # Specify the folder containing your product media files
@@ -57,7 +57,7 @@ def example_single_media_upload():
     uploader = ShopifyImageUploader(
         shop_url=SHOPIFY_STORE_URL,
         api_key=SHOPIFY_API_KEY,
-        secret_key=SHOPIFY_SECRET_KEY
+        access_token=SHOPIFY_SECRET_KEY
     )
     
     # Upload a single media file to a specific product
@@ -101,7 +101,7 @@ def example_filename_patterns():
     uploader = ShopifyImageUploader(
         shop_url=SHOPIFY_STORE_URL,
         api_key=SHOPIFY_API_KEY,
-        secret_key=SHOPIFY_SECRET_KEY
+        access_token=SHOPIFY_SECRET_KEY
     )
     
     # Test different filename patterns for both images and videos

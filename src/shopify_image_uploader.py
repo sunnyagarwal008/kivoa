@@ -19,20 +19,17 @@ Filename patterns supported:
     - Custom patterns can be configured in the script
 """
 
-import os
-import re
-import sys
-import logging
 import argparse
+import logging
+import sys
 from pathlib import Path
-from typing import List, Optional, Dict, Any
-import mimetypes
+from typing import Optional, Dict, Any
 
-import shopify
 import requests
+import shopify
 from PIL import Image
 
-from config import SHOPIFY_API_KEY, SHOPIFY_SECRET_KEY, SUPPORTED_FORMATS
+from config import ADMIN_API_ACCESS_TOKEN, SHOPIFY_STORE_URL, SUPPORTED_FORMATS
 
 # Supported video formats
 SUPPORTED_VIDEO_FORMATS = {'.mp4'}
@@ -46,24 +43,68 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def is_valid_media(media_path: Path) -> bool:
+    """
+    Check if file is a valid image or video
+
+    Args:
+        media_path: Path to the media file
+
+    Returns:
+        True if valid media file, False otherwise
+    """
+    # Check file extension
+    if media_path.suffix.lower() not in ALL_SUPPORTED_FORMATS:
+        return False
+
+    # Check if file exists and is readable
+    if not media_path.exists() or not media_path.is_file():
+        return False
+
+    # For images, try to open with PIL to validate
+    if media_path.suffix.lower() in SUPPORTED_FORMATS:
+        try:
+            with Image.open(media_path) as img:
+                img.verify()
+            return True
+        except Exception as e:
+            logger.error(f"Invalid image file {media_path}: {e}")
+            return False
+
+    # For videos, just check if it's a readable file
+    elif media_path.suffix.lower() in SUPPORTED_VIDEO_FORMATS:
+        try:
+            # Basic validation - check if file is readable and has content
+            if media_path.stat().st_size > 0:
+                return True
+            else:
+                logger.error(f"Video file is empty: {media_path}")
+                return False
+        except Exception as e:
+            logger.error(f"Invalid video file {media_path}: {e}")
+            return False
+
+    return False
+
+
 class ShopifyImageUploader:
     """Handles uploading images and videos to Shopify products"""
 
-    def __init__(self, shop_url: str, api_key: str, secret_key: str):
+    def __init__(self, shop_url: str, access_token: str):
         """
         Initialize Shopify connection
 
         Args:
             shop_url: Your Shopify store URL (e.g., 'your-store.myshopify.com')
             api_key: Shopify API key
-            secret_key: Shopify secret key
+            access_token: Shopify secret key
         """
         self.shop_url = shop_url
-        self.api_key = api_key
-        self.secret_key = secret_key
+        self.access_token = access_token
 
         # Configure Shopify session
-        shopify.ShopifyResource.set_site(f"https://{api_key}:{secret_key}@{shop_url}/admin/api/2023-10")
+        self.session = shopify.Session(shop_url, "2024-07", access_token)
+        shopify.ShopifyResource.activate_session(self.session)
 
         # Test connection
         try:
@@ -71,40 +112,105 @@ class ShopifyImageUploader:
             logger.info(f"Connected to Shopify store: {shop.name}")
         except Exception as e:
             logger.error(f"Failed to connect to Shopify: {e}")
-            raise
+            raise e
 
     def extract_product_id_from_filename(self, filename: str) -> Optional[str]:
         """
-        Extract product ID from filename using various patterns
+        Extract product ID from filename by extracting SKU and looking it up in Shopify
 
         Args:
-            filename: The image filename
+            filename: The image filename (e.g., "NK-00001-0825-02.jpg")
 
         Returns:
             Product ID as string, or None if not found
         """
-        # Define patterns to match product IDs in filenames
-        patterns = [
-            r'product[_-](\d+)',           # product_123 or product-123
-            r'(\d+)[_-]',                  # 123_ or 123-
-            r'[_-](\d+)[_-]',             # _123_ or -123-
-            r'SKU[_-](\d+)',              # SKU_123 or SKU-123
-            r'ID[_-](\d+)',               # ID_123 or ID-123
-            r'^(\d+)',                     # Starting with digits
-            r'(\d{6,})',                   # 6 or more consecutive digits
-        ]
+        try:
+            # Extract SKU from filename
+            # Example: "NK-00001-0825-02.jpg" -> "NK-00001-0825"
+            name_without_ext = filename.rsplit('.', 1)[0]  # NK-00001-0825-02
 
-        filename_lower = filename.lower()
+            # Split on dashes
+            parts = name_without_ext.split('-')  # ['NK', '00001', '0825', '02']
 
-        for pattern in patterns:
-            match = re.search(pattern, filename_lower)
-            if match:
-                product_id = match.group(1)
-                logger.debug(f"Extracted product ID '{product_id}' from '{filename}' using pattern '{pattern}'")
-                return product_id
+            # Join the first three parts to get the SKU
+            if len(parts) >= 3:
+                sku = '-'.join(parts[:3])  # NK-00001-0825
+            else:
+                logger.warning(f"Filename {filename} doesn't match expected SKU pattern")
+                return None
 
-        logger.warning(f"Could not extract product ID from filename: {filename}")
-        return None
+            logger.info(f"Extracted SKU '{sku}' from filename '{filename}'")
+
+            # Look up product by SKU using Shopify API
+            return self.search_product_by_sku_graphql(sku)
+
+        except Exception as e:
+            logger.error(f"Error extracting product ID from filename {filename}: {e}")
+            raise e
+
+
+    def search_product_by_sku_graphql(self, sku: str) -> Optional[str]:
+        """
+        Search for product by SKU using GraphQL API (more efficient for large catalogs)
+
+        Args:
+            sku: The product SKU to search for
+
+        Returns:
+            Product ID as string, or None if not found
+        """
+        try:
+            # GraphQL query to search for products by SKU
+            query = """
+            query getProductBySku($query: String!) {
+                products(first: 10, query: $query) {
+                    edges {
+                        node {
+                            id
+                            title
+                            variants(first: 50) {
+                                edges {
+                                    node {
+                                        id
+                                        sku
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            """
+
+            variables = {
+                "query": f"sku:{sku}"
+            }
+
+            response = self._execute_graphql_query(query, variables)
+
+            if response and 'data' in response and 'products' in response['data']:
+                products = response['data']['products']['edges']
+
+                for product_edge in products:
+                    product = product_edge['node']
+                    variants = product['variants']['edges']
+
+                    for variant_edge in variants:
+                        variant = variant_edge['node']
+                        if variant.get('sku') == sku:
+                            # Extract numeric ID from GraphQL ID (e.g., "gid://shopify/Product/123" -> "123")
+                            product_gid = product['id']
+                            product_id = product_gid.split('/')[-1]
+                            logger.info(f"Found product {product_id} with title '{product['title']}' for SKU '{sku}' via GraphQL")
+                            return product_id
+
+            logger.warning(f"No product found for SKU '{sku}' via GraphQL search")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error searching for product with SKU {sku} via GraphQL: {e}")
+            raise e
+
 
     def get_product(self, product_id: str) -> Optional[shopify.Product]:
         """
@@ -143,7 +249,7 @@ class ShopifyImageUploader:
                 return False
 
             # Validate media file
-            if not self.is_valid_media(media_path):
+            if not is_valid_media(media_path):
                 logger.error(f"Invalid media file: {media_path}")
                 return False
 
@@ -151,226 +257,32 @@ class ShopifyImageUploader:
             is_video = media_path.suffix.lower() in SUPPORTED_VIDEO_FORMATS
 
             if is_video:
-                return self._upload_video_to_product(product, media_path, alt_text)
+                return False
             else:
                 return self._upload_image_to_product(product, media_path, alt_text)
 
         except Exception as e:
-            logger.error(f"Error uploading media {media_path} to product {product_id}: {e}")
-            return False
+            raise e
 
     def _upload_image_to_product(self, product: shopify.Product, image_path: Path, alt_text: str = None) -> bool:
-        """
-        Upload an image to a Shopify product using the Image API
+        import base64
+        with open(image_path, "rb") as f:
+            image_data = f.read()
+        encoded_image = base64.b64encode(image_data).decode("utf-8")
 
-        Args:
-            product: Shopify Product object
-            image_path: Path to the image file
-            alt_text: Alternative text for the image
+        # Create new image
+        new_image = shopify.Image()
+        new_image.product_id = product.id
+        new_image.alt = alt_text or image_path.stem
+        new_image.attachment = encoded_image
+        success = new_image.save()
 
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Read image data
-            with open(image_path, 'rb') as f:
-                image_data = f.read()
+        if success:
+            print(f"Image uploaded successfully: {new_image.src}")
+        else:
+            print("Image upload failed:", new_image.errors.full_messages())
+        return success
 
-            # Create image object
-            image = shopify.Image()
-            image.product_id = product.id
-            image.attachment = image_data
-            image.filename = image_path.name
-
-            if alt_text:
-                image.alt = alt_text
-            else:
-                image.alt = f"Product image for {product.title}"
-
-            # Upload the image
-            if image.save():
-                logger.info(f"Successfully uploaded image {image_path.name} to product {product.id}")
-                return True
-            else:
-                logger.error(f"Failed to upload image {image_path.name}: {image.errors.full_messages()}")
-                return False
-
-        except Exception as e:
-            logger.error(f"Error uploading image {image_path}: {e}")
-            return False
-
-    def upload_image_to_product(self, product_id: str, image_path: Path, alt_text: str = None) -> bool:
-        """
-        Backward compatibility method for uploading images
-
-        Args:
-            product_id: The product ID
-            image_path: Path to the image file
-            alt_text: Alternative text for the image
-
-        Returns:
-            True if successful, False otherwise
-        """
-        return self.upload_media_to_product(product_id, image_path, alt_text)
-
-    def _upload_video_to_product(self, product: shopify.Product, video_path: Path, alt_text: str = None) -> bool:
-        """
-        Upload a video to a Shopify product using the GraphQL API
-
-        Args:
-            product: Shopify Product object
-            video_path: Path to the video file
-            alt_text: Alternative text for the video
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # For videos, we need to use Shopify's GraphQL API
-            # First, we need to create a staged upload
-            staged_upload_mutation = """
-            mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
-                stagedUploadsCreate(input: $input) {
-                    stagedTargets {
-                        url
-                        resourceUrl
-                        parameters {
-                            name
-                            value
-                        }
-                    }
-                    userErrors {
-                        field
-                        message
-                    }
-                }
-            }
-            """
-
-            # Get file size
-            file_size = video_path.stat().st_size
-
-            # Create staged upload
-            variables = {
-                "input": [{
-                    "resource": "VIDEO",
-                    "filename": video_path.name,
-                    "mimeType": "video/mp4",
-                    "httpMethod": "POST",
-                    "fileSize": str(file_size)
-                }]
-            }
-
-            # Execute GraphQL mutation to create staged upload
-            response = self._execute_graphql_query(staged_upload_mutation, variables)
-
-            if not response or 'data' not in response:
-                logger.error(f"Failed to create staged upload for video {video_path.name}")
-                return False
-
-            staged_targets = response['data']['stagedUploadsCreate']['stagedTargets']
-            if not staged_targets:
-                logger.error(f"No staged targets returned for video {video_path.name}")
-                return False
-
-            staged_target = staged_targets[0]
-            upload_url = staged_target['url']
-            resource_url = staged_target['resourceUrl']
-
-            # Upload the video file to the staged URL
-            if not self._upload_file_to_staged_url(video_path, upload_url, staged_target['parameters']):
-                return False
-
-            # Create the product media using the uploaded file
-            create_media_mutation = """
-            mutation productCreateMedia($media: [CreateMediaInput!]!, $productId: ID!) {
-                productCreateMedia(media: $media, productId: $productId) {
-                    media {
-                        id
-                        mediaContentType
-                        status
-                    }
-                    mediaUserErrors {
-                        field
-                        message
-                    }
-                    product {
-                        id
-                    }
-                }
-            }
-            """
-
-            media_variables = {
-                "productId": f"gid://shopify/Product/{product.id}",
-                "media": [{
-                    "originalSource": resource_url,
-                    "mediaContentType": "VIDEO",
-                    "alt": alt_text or f"Product video for {product.title}"
-                }]
-            }
-
-            # Execute GraphQL mutation to create media
-            media_response = self._execute_graphql_query(create_media_mutation, media_variables)
-
-            if media_response and 'data' in media_response:
-                media_errors = media_response['data']['productCreateMedia']['mediaUserErrors']
-                if not media_errors:
-                    logger.info(f"Successfully uploaded video {video_path.name} to product {product.id}")
-                    return True
-                else:
-                    logger.error(f"Failed to create media for video {video_path.name}: {media_errors}")
-                    return False
-            else:
-                logger.error(f"Failed to create media for video {video_path.name}")
-                return False
-
-        except Exception as e:
-            logger.error(f"Error uploading video {video_path}: {e}")
-            return False
-
-    def is_valid_media(self, media_path: Path) -> bool:
-        """
-        Check if file is a valid image or video
-
-        Args:
-            media_path: Path to the media file
-
-        Returns:
-            True if valid media file, False otherwise
-        """
-        # Check file extension
-        if media_path.suffix.lower() not in ALL_SUPPORTED_FORMATS:
-            return False
-
-        # Check if file exists and is readable
-        if not media_path.exists() or not media_path.is_file():
-            return False
-
-        # For images, try to open with PIL to validate
-        if media_path.suffix.lower() in SUPPORTED_FORMATS:
-            try:
-                with Image.open(media_path) as img:
-                    img.verify()
-                return True
-            except Exception as e:
-                logger.error(f"Invalid image file {media_path}: {e}")
-                return False
-
-        # For videos, just check if it's a readable file
-        elif media_path.suffix.lower() in SUPPORTED_VIDEO_FORMATS:
-            try:
-                # Basic validation - check if file is readable and has content
-                if media_path.stat().st_size > 0:
-                    return True
-                else:
-                    logger.error(f"Video file is empty: {media_path}")
-                    return False
-            except Exception as e:
-                logger.error(f"Invalid video file {media_path}: {e}")
-                return False
-
-        return False
 
     def _execute_graphql_query(self, query: str, variables: dict = None) -> dict:
         """
@@ -387,7 +299,7 @@ class ShopifyImageUploader:
             url = f"https://{self.shop_url}/admin/api/2023-10/graphql.json"
             headers = {
                 'Content-Type': 'application/json',
-                'X-Shopify-Access-Token': self.secret_key
+                'X-Shopify-Access-Token': self.access_token
             }
 
             payload = {
@@ -404,37 +316,6 @@ class ShopifyImageUploader:
             logger.error(f"GraphQL query failed: {e}")
             return {}
 
-    def _upload_file_to_staged_url(self, file_path: Path, upload_url: str, parameters: list) -> bool:
-        """
-        Upload a file to Shopify's staged upload URL
-
-        Args:
-            file_path: Path to the file to upload
-            upload_url: Staged upload URL
-            parameters: Upload parameters from Shopify
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Prepare form data
-            form_data = {}
-            for param in parameters:
-                form_data[param['name']] = param['value']
-
-            # Add the file
-            with open(file_path, 'rb') as f:
-                files = {'file': (file_path.name, f, 'video/mp4')}
-
-                response = requests.post(upload_url, data=form_data, files=files)
-                response.raise_for_status()
-
-                logger.info(f"Successfully uploaded {file_path.name} to staged URL")
-                return True
-
-        except Exception as e:
-            logger.error(f"Failed to upload {file_path.name} to staged URL: {e}")
-            return False
 
     def process_folder(self, folder_path: Path, dry_run: bool = False) -> Dict[str, Any]:
         """
@@ -483,7 +364,7 @@ class ShopifyImageUploader:
                     continue
 
                 # Validate media file
-                if not self.is_valid_media(media_path):
+                if not is_valid_media(media_path):
                     results['skipped_files'] += 1
                     continue
 
@@ -535,24 +416,6 @@ Supported formats:
     )
 
     parser.add_argument(
-        '--shop',
-        type=str,
-        help='Shopify store URL (e.g., your-store.myshopify.com)'
-    )
-
-    parser.add_argument(
-        '--api-key',
-        type=str,
-        help='Shopify API key (overrides config.py)'
-    )
-
-    parser.add_argument(
-        '--secret-key',
-        type=str,
-        help='Shopify secret key (overrides config.py)'
-    )
-
-    parser.add_argument(
         '--dry-run',
         action='store_true',
         help='Simulate the process without actually uploading media files'
@@ -571,22 +434,10 @@ Supported formats:
         logging.getLogger().setLevel(logging.DEBUG)
 
     # Get configuration
-    api_key = args.api_key or SHOPIFY_API_KEY
-    secret_key = args.secret_key or SHOPIFY_SECRET_KEY
-
-    if not api_key or not secret_key:
-        logger.error("Shopify API key and secret key are required")
-        logger.error("Provide them via --api-key and --secret-key arguments or set them in config.py")
-        sys.exit(1)
-
-    if not args.shop:
-        logger.error("Shopify store URL is required (--shop argument)")
-        logger.error("Example: --shop your-store.myshopify.com")
-        sys.exit(1)
 
     # Initialize uploader
     try:
-        uploader = ShopifyImageUploader(args.shop, api_key, secret_key)
+        uploader = ShopifyImageUploader(SHOPIFY_STORE_URL, ADMIN_API_ACCESS_TOKEN)
     except Exception as e:
         logger.error(f"Failed to initialize Shopify connection: {e}")
         sys.exit(1)
