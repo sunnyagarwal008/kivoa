@@ -1,3 +1,4 @@
+import io
 from pathlib import Path
 import logging
 from pathlib import Path
@@ -8,6 +9,7 @@ from PIL import Image
 from config import (
     SUPPORTED_FORMATS, LOG_LEVEL, LOG_FORMAT
 )
+from src.test_gdrive_file_downloader import output
 
 # Configure logging
 logging.basicConfig(
@@ -75,7 +77,7 @@ def convert_to_square(image: Image.Image, method: str = 'pad', background_color:
     # If already square, return copy
     if width == height:
         logger.info("Image is already square")
-        return image.copy()
+        square_image = image.copy()
 
     if method == 'pad':
         # Add padding to make square
@@ -92,7 +94,6 @@ def convert_to_square(image: Image.Image, method: str = 'pad', background_color:
         square_image.paste(image, (x_offset, y_offset))
 
         logger.info(f"Converted image to square using padding: {width}x{height} -> {max_dimension}x{max_dimension}")
-        return square_image
 
     elif method == 'crop':
         # Crop to square from center
@@ -107,7 +108,6 @@ def convert_to_square(image: Image.Image, method: str = 'pad', background_color:
         square_image = image.crop((left, top, right, bottom))
 
         logger.info(f"Converted image to square using cropping: {width}x{height} -> {min_dimension}x{min_dimension}")
-        return square_image
 
     elif method == 'stretch':
         # Stretch to square (may distort)
@@ -115,10 +115,17 @@ def convert_to_square(image: Image.Image, method: str = 'pad', background_color:
         square_image = image.resize((target_size, target_size), Image.Resampling.LANCZOS)
 
         logger.info(f"Converted image to square using stretching: {width}x{height} -> {target_size}x{target_size}")
-        return square_image
 
     else:
         raise ValueError(f"Invalid method '{method}'. Must be 'pad', 'crop', or 'stretch'")
+
+    output_format = "PNG"
+    img_bytes = io.BytesIO()
+    save_kwargs = {"optimize": True}
+    square_image.save(img_bytes, format=output_format, **save_kwargs)
+    img_bytes.seek(0)
+    compressed_image = Image.open(img_bytes).convert("RGB")
+    return compressed_image
 
 
 def main():
