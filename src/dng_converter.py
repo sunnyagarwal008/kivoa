@@ -135,14 +135,14 @@ def batch_convert_dng_to_png(
         try:
             input_path = os.path.join(input_directory, dng_file)
             base_name = os.path.splitext(dng_file)[0]
-            output_path = os.path.join(output_directory, f"{base_name}_raw.png")
-            convert_dng_to_png(input_path, output_path, **kwargs)
+            raw_output_path = os.path.join(output_directory, f"{base_name}_raw.png")
+            convert_dng_to_png(input_path, raw_output_path, **kwargs)
 
-            output_image = load_image(Path(output_path))
+            output_image = load_image(Path(raw_output_path))
             output_image_square = convert_to_square(output_image, method='crop')
             final_output_path = os.path.join(output_directory, f"{base_name}.png")
             output_image_square.save(final_output_path)
-
+            os.remove(raw_output_path)
             converted_files.append(final_output_path)
             
         except Exception as ex:
