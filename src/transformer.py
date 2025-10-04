@@ -42,12 +42,15 @@ def generate_images(
             input_file = os.path.join(input_dir, image_name)
             input_image_parts = image_name.split(".")
             image_prefix = input_image_parts[0]
-            output_image_name = f"{image_prefix[:image_prefix.rfind('-')]}-0{i}.{input_image_parts[1]}"
+
+            sku = image_prefix[:image_prefix.rfind('-')]
+            final_prompt = prompt + " Also add the text " + sku + " vertically top to down to the bottom right of the generated image, the font size should be 6 and font color should be contrasting with the background."
+            output_image_name = f"{sku}-0{i}.{input_image_parts[1]}"
             output_file = os.path.join(output_dir, f"{output_image_name}")
-            do_generate_image(client, input_file, output_file, prompt)
+            do_generate_image(client, sku, input_file, output_file, final_prompt)
 
 
-def do_generate_image(client, image_path, output_file, prompt):
+def do_generate_image(client, sku, image_path, output_file, prompt):
     contents = []
     print(f"Processing {image_path}...")
     with open(image_path, "rb") as f:
