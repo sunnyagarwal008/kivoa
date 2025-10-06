@@ -62,7 +62,7 @@ def convert_dng_to_png(
         with rawpy.imread(dng_path) as raw:
             # Process the raw image with specified parameters
             rgb_array = raw.postprocess(
-                gamma=(gamma, 1.0),
+                gamma=(2.2, 4.5),
                 use_camera_wb=True,
                 half_size=False,
                 no_auto_bright=False,

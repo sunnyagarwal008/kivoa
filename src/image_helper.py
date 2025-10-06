@@ -9,7 +9,6 @@ from PIL import Image
 from config import (
     SUPPORTED_FORMATS, LOG_LEVEL, LOG_FORMAT
 )
-from src.test_gdrive_file_downloader import output
 
 # Configure logging
 logging.basicConfig(
